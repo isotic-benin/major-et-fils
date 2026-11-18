@@ -230,20 +230,62 @@ le XOF). Le formatage utilise `Intl.NumberFormat` avec la locale `fr-FR`.
 
 ## Déploiement
 
-1. Créez une base MongoDB Atlas et récupérez son URI.
-2. Définissez les variables d'environnement sur la plateforme d'hébergement
-   (Vercel, Render, VPS…) :
-   - `MONGODB_URI`, `MONGODB_DB`
-   - `AUTH_SECRET` (valeur unique et robuste)
-   - `ADMIN_EMAIL`, `ADMIN_PASSWORD`
-   - les variables `NEXT_PUBLIC_*`
-3. Exécutez le seed une première fois depuis un environnement ayant accès à la
-   base : `npm run seed` (avec les variables de production).
-4. Lancez `npm run build` puis `npm run start`.
+> Les pages du storefront sont prérendues au build (`"use cache"` +
+> `cacheLife("minutes")`). Le build a donc besoin d'un accès **réseau à la base
+> MongoDB au moment de la compilation**. Un `MongoServerSelectionError:
+> connect ECONNREFUSED 127.0.0.1:27017` dans les logs signifie que
+> `MONGODB_URI` n'est pas définie sur l'hébergeur : le code se rabat sur
+> localhost, où aucune base n'écoute.
 
-MongoDB Atlas doit autoriser l'adresse IP de l'hébergeur. En production,
+1. Créez une base MongoDB Atlas et récupérez son URI.
+2. Dans MongoDB Atlas → **Network Access**, autorisez les IP de l'hébergeur.
+   Sur Vercel, les IP de build sont dynamiques : ajoutez `0.0.0.0/0` (ou passez
+   par un peering/PrivateLink si la sécurité l'exige).
+3. Définissez les variables d'environnement sur la plateforme d'hébergement
+   (Vercel, Render, VPS…). Sur Vercel : **Project → Settings → Environment
+   Variables**, en cochant **Production + Preview + Development** :
+   - `MONGODB_URI`, `MONGODB_DB` — obligatoires (le build échoue sans elles)
+   - `AUTH_SECRET` (`openssl rand -hex 32`, 32 caractères minimum) — obligatoire
+   - `ADMIN_EMAIL`, `ADMIN_PASSWORD`
+   - `BLOB_READ_WRITE_TOKEN`, `BLOB_STORE_ID` — envoi des images du catalogue
+   - les variables `NEXT_PUBLIC_*`
+4. Exécutez le seed une première fois depuis un environnement ayant accès à la
+   base : `npm run seed` (avec les variables de production).
+5. Déployez : `npm run build` puis `npm run start`.
+   Le hook `prebuild` (`scripts/check-env.mjs`) vérifie la configuration avant
+   la compilation et affiche la liste des variables manquantes.
+
 `AUTH_SECRET` ne doit jamais être commité et le mot de passe admin doit être
-changé.
+changé avant la mise en ligne.
+
+### Stockage des images (Vercel Blob)
+
+Les visuels de produits, catégories et promotions sont envoyés depuis le
+back-office vers **Vercel Blob** (`src/lib/uploads.ts`) — le disque des fonctions
+serverless est en lecture seule, l'ancienne écriture dans `public/uploads`
+n'aurait donc jamais fonctionné en production.
+
+- Formats acceptés : JPEG, PNG, WebP, AVIF, GIF — **5 Mo maximum** par image. Le
+  type réel est vérifié à partir des premiers octets du fichier, pas de
+  l'extension ni du `Content-Type` annoncé par le navigateur.
+- Les URL sont rangées dans les dossiers `produits/`, `categories/` et
+  `promotions/` du store.
+- **Store privé** : l'URL du store exige un jeton, le navigateur ne peut pas
+  l'afficher. L'URL enregistrée en base est alors relative
+  (`/api/blob/produits/…`) et servie par la route handler
+  `src/app/api/blob/[...pathname]/route.ts`, qui relaie le fichier avec un cache
+  immuable d'un an. Seuls ces trois dossiers sont exposés.
+- **Store public** : l'URL CDN `*.public.blob.vercel-storage.com` est enregistrée
+  directement, sans passer par le relais.
+- Le mode est détecté automatiquement au premier envoi ; il peut être forcé avec
+  `BLOB_ACCESS=public` ou `BLOB_ACCESS=private`.
+- Les chemins historiques (`/catalogue/…`, `/promotions/…`) restent valides :
+  seuls les nouveaux envois passent par Blob.
+- La suppression d'un produit, d'une catégorie ou d'une promotion nettoie aussi
+  ses images dans le store (les échecs de nettoyage ne bloquent pas l'action).
+- `next.config.ts` relève `experimental.serverActions.bodySizeLimit` à `12mb`
+  pour laisser passer plusieurs photos dans une même soumission.
+
 
 ## Sécurité
 
